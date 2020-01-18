@@ -55,8 +55,9 @@ class SocketClientThread(QThread):
         self.running = False
         self.progressbar = None
 
-    def pass_para(self, url_list):
+    def pass_para(self, url_list, ip):
         self.url_list = url_list
+        self.ip = ip
 
     def run(self):
         need_to_send = list()
@@ -67,15 +68,35 @@ class SocketClientThread(QThread):
             else:
                 for f in get_files_in_folder(url):
                     need_to_send.append(f)
-        #print(need_to_send)
-        import time
-        for i, f in enumerate(need_to_send):
+        
+        # setup socket client for sending the files
+        s = socket.socket()         
+        port = 12345                
+        s.connect((self.ip, port))
+
+        for i, fname in enumerate(need_to_send):
             progress = (100.0*i)/len(need_to_send)
             # sending file with socket
-            # 
+            filename = os.path.basename(fname)
+            size = len(filename)
+            size = bin(size)[2:].zfill(16) # encode filename size as 16 bit binary
+            s.send(size.encode())
+            s.send(filename.encode())
+
+            filename = fname
+            filesize = os.path.getsize(filename)
+            filesize = bin(filesize)[2:].zfill(32) # encode filesize as 32 bit binary
+            s.send(filesize.encode())
+            file_to_send = open(filename, 'rb')
+
+            l = file_to_send.read()
+            s.sendall(l)
+            file_to_send.close()
+            print('File Sent ' + filename)
+            # s.shutdown(socket.SHUT_WR)
             self.progress_updated.emit(progress)
-            time.sleep(0.5)
         self.progress_updated.emit(100)
+        s.close()
 
 
 
@@ -123,7 +144,7 @@ class SendDialog(QDialog):
         ip = self.ui.tableWidget.item(row, 1).text()
 
         self.socket_client_thread = SocketClientThread()
-        self.socket_client_thread.pass_para(self.url_list)
+        self.socket_client_thread.pass_para(self.url_list, ip)
         self.socket_client_thread.progress_updated.connect(self.update_progress)
         self.socket_client_thread.start()
 

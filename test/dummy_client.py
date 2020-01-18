@@ -1,9 +1,48 @@
-import socket
+import socket, threading 
+
+
+def service_socket():
+    s = socket.socket() 
+    host = socket.gethostname()
+    port = 12345               
+    s.bind(('', port))
+    # f = open('torecv.png','wb')
+    s.listen(5)                 # Now wait for client connection.
+    while True:
+        c, addr = s.accept()    
+        while True:
+            size = c.recv(16) # Note that you limit your filename length to 255 bytes.
+            if not size:
+                break
+            size = int(size.decode(), 2)
+            filename = c.recv(size)
+            filesize = c.recv(32)
+            filesize = int(filesize.decode(), 2)
+            file_to_write = open(filename, 'wb')
+            chunksize = 4096
+            while filesize > 0:
+                if filesize < chunksize:
+                    chunksize = filesize
+                data = c.recv(chunksize)
+                file_to_write.write(data)
+                filesize -= len(data)
+
+            file_to_write.close()
+            print('File received successfully')
+#        c.close()
+
+
+
+
+
 s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 s.settimeout(1)
 #s.setblocking(False)
 s.bind(('',54545))
 
+
+server_thread = threading.Thread(target=service_socket)
+server_thread.start()
 
 
 while True:
