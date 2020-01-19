@@ -61,5 +61,7 @@ while True:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             hostname = socket.gethostname()
             s.sendto('Exchange {} ServerOn'.format(hostname).encode('utf-8'), ('255.255.255.255', 54545))  # send broadcast message on 54545
+        elif recv_str == 'SendConfirm':
+            s.sendto('SendMe'.encode('utf-8'), ('255.255.255.255', 54545))  # send broadcast message on 54545
         else:
             print(recv_str, address)

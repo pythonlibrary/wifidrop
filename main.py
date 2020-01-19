@@ -1,7 +1,7 @@
 import sys, os, socket
 
 
-from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QSpacerItem, QSizePolicy, QFileDialog, QDialog, QTableWidgetItem 
+from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QSpacerItem, QSizePolicy, QFileDialog, QDialog, QTableWidgetItem, QMessageBox
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtCore import pyqtSignal, pyqtSlot, QThread
 from PyQt5.uic import loadUi
@@ -12,10 +12,11 @@ def get_files_in_folder(folder):
             _, ext = os.path.splitext(file_name)
             yield os.path.join(root, file_name)
 
-
 class DeviceDiscoverThread(QThread):
 
     found_a_device = pyqtSignal(str, str, str)
+    allow_sending = pyqtSignal(bool)
+    device_discover_pack_received = pyqtSignal(str, str)
 
     def __init__(self):
         super(DeviceDiscoverThread, self).__init__()
@@ -31,20 +32,73 @@ class DeviceDiscoverThread(QThread):
             try:
                 m, address = self.s.recvfrom(1024)
             except socket.timeout:
+                print("timeout")
                 pass
 
             if m and address:
+                print(m)
                 recv_str = m.decode("utf-8")  # pythonlibrary 192.168.1.100 on
                 recv_items = recv_str.split()
+                ip = address[0]
                 if recv_items[0] == 'Init':
-                    pass
+                    self.device_discover_pack_received.emit('Init', ip)
+                elif recv_items[0] == 'SendConfirm': 
+                    self.device_discover_pack_received.emit('SendConfirm', ip)
+                elif recv_items[0] == 'SendMe':
+                    self.allow_sending.emit(True)
+                elif recv_items[0] == 'NotSendMe':
+                    self.allow_sending.emit(False)
                 else:
                     name = recv_items[1]
                     status = recv_items[2]
-                    ip = address[0]
-                    self.found_a_device.emit(name, ip, status)
+                    if name != socket.gethostname():
+                        self.found_a_device.emit(name, ip, status)
         self.s.close()
         self.s = None
+
+class SocketServerThread(QThread):
+
+    def __init__(self):
+        super(SocketServerThread, self).__init__()
+        self.running = True
+        self.connected = False
+
+    def run(self):
+        while True:
+            while self.running:
+                s = socket.socket() 
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                host = socket.gethostname()
+                port = 12345               
+                s.settimeout(1)
+                s.bind(('', port))
+                s.listen(5)            
+                try:
+                    c, addr = s.accept()    
+                    self.connected = True
+                except socket.timeout:
+                    self.connected = False
+                while self.running and self.connected:
+                    size = c.recv(16) # Note that you limit your filename length to 255 bytes.
+                    if not size:
+                        break
+                    size = int(size.decode(), 2)
+                    filename = c.recv(size)
+                    filesize = c.recv(32)
+                    filesize = int(filesize.decode(), 2)
+                    file_to_write = open(filename, 'wb')
+                    chunksize = 4096
+                    while filesize > 0:
+                        if filesize < chunksize:
+                            chunksize = filesize
+                        data = c.recv(chunksize)
+                        file_to_write.write(data)
+                        filesize -= len(data)
+
+                    file_to_write.close()
+                    print('File received successfully')
+                s.close()
+
 
 class SocketClientThread(QThread):
 
@@ -57,7 +111,7 @@ class SocketClientThread(QThread):
 
     def pass_para(self, url_list, ip):
         self.url_list = url_list
-        self.ip = ip
+        self.target_ip = ip
 
     def run(self):
         need_to_send = list()
@@ -72,7 +126,7 @@ class SocketClientThread(QThread):
         # setup socket client for sending the files
         s = socket.socket()         
         port = 12345                
-        s.connect((self.ip, port))
+        s.connect((self.target_ip, port))
 
         for i, fname in enumerate(need_to_send):
             progress = (100.0*i)/len(need_to_send)
@@ -101,7 +155,7 @@ class SocketClientThread(QThread):
 
 
 class SendDialog(QDialog):
-    def __init__(self, url_list):
+    def __init__(self, url_list, socket_server_thread, device_discover_thread, socket_broadcast):
         super(SendDialog, self).__init__()
 
         # UI setup - 1 option
@@ -127,26 +181,40 @@ class SendDialog(QDialog):
 
         self.url_list = url_list
 
-        self.device_discover_thread = DeviceDiscoverThread()
+        self.device_discover_thread = device_discover_thread
         self.device_discover_thread.found_a_device.connect(self.update_devices)
-        self.device_discover_thread.start()
+        self.device_discover_thread.allow_sending.connect(self.send_permission)
+        
+        self.socket_broadcast = socket_broadcast 
+        self.socket_broadcast.sendto('Init'.encode('utf-8'), ('255.255.255.255', 54545)) 
 
-        self.socket_broadcast = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket_broadcast.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.socket_broadcast.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        self.socket_broadcast.sendto(b'Init', ('255.255.255.255', 54545))  # send broadcast message on 54545
-    
+        self.socket_server_thread = socket_server_thread
+
     def closeEvent(self, event):
-        self.device_discover_thread.running = False
+        self.socket_client_thread.running = False
+        self.socket_server_thread.running = True
+    
+    @pyqtSlot(bool)
+    def send_permission(self, allow):
+        if allow:
+            self.socket_server_thread.running = False
+            self.socket_client_thread = SocketClientThread()
+            self.socket_client_thread.pass_para(self.url_list, self.target_ip)
+            self.socket_client_thread.progress_updated.connect(self.update_progress)
+            self.socket_client_thread.start()
+        else:
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Information)
+            msg.setWindowTitle("WiFi Drop 拒绝接收")
+            msg.setText("拒绝接受")
+            msg.exec_()
 
     def send_out(self, row, col):
         name = self.ui.tableWidget.item(row, 0).text()
-        ip = self.ui.tableWidget.item(row, 1).text()
-
-        self.socket_client_thread = SocketClientThread()
-        self.socket_client_thread.pass_para(self.url_list, ip)
-        self.socket_client_thread.progress_updated.connect(self.update_progress)
-        self.socket_client_thread.start()
+        self.target_ip = self.ui.tableWidget.item(row, 1).text()
+        # ask for permission from target
+        message = 'SendConfirm'
+        self.socket_broadcast.sendto(message.encode('utf-8'), (self.target_ip, 54545)) 
 
     @pyqtSlot(str,str,str)
     def update_devices(self, name, ip, status):
@@ -190,7 +258,6 @@ class DropArea(QLabel):
 
 
 
-
 class MainWindow(QMainWindow):
     """Main window"""
     def __init__(self):
@@ -210,6 +277,41 @@ class MainWindow(QMainWindow):
         spacerItem = QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum) # QtWidgets
         self.ui.horizontalLayout.addItem(spacerItem)
 
+        self.socket_server_thread = SocketServerThread()
+        self.socket_server_thread.start()
+
+        self.device_discover_thread = DeviceDiscoverThread()
+        self.device_discover_thread.device_discover_pack_received.connect(self.device_discover_pack_received)
+        self.device_discover_thread.start()
+        
+        self.socket_broadcast = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket_broadcast.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.socket_broadcast.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+
+    @pyqtSlot(str, str)
+    def device_discover_pack_received(self, command, ip):
+        if command == 'Init':
+            self.target_ip = ip
+            hostname = socket.gethostname()
+            message = 'Exchange {} ServerOn'.format(hostname)
+            self.socket_broadcast.sendto(message.encode('utf-8'), (self.target_ip, 54545)) 
+        elif command == 'SendConfirm':
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Information)
+            msg.setWindowTitle("WiFi Drop 接收确认")
+            msg.setText("确认接收?")
+            msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+            msg.buttonClicked.connect(self.msgbtn)
+            msg.exec_()
+    
+    def msgbtn(self, i):
+        if i.text() == 'OK':
+            message = 'SendMe'
+            self.socket_broadcast.sendto(message.encode('utf-8'), (self.target_ip, 54545)) 
+        else:
+            message = 'NotSendMe'
+            self.socket_broadcast.sendto(message.encode('utf-8'), (self.target_ip, 54545)) 
+
     @pyqtSlot(list)
     def prepare_sending(self, files):
         url_list = list()
@@ -226,7 +328,7 @@ class MainWindow(QMainWindow):
             for f in files:
                 url_list.append(f)
 
-        senddiag = SendDialog(url_list)
+        senddiag = SendDialog(url_list, self.socket_server_thread, self.device_discover_thread, self.socket_broadcast)
         senddiag.exec() 
 
     def pushButtonChoose_clicked(self):
@@ -237,9 +339,6 @@ class MainWindow(QMainWindow):
 
         if len(files) > 0:
             self.prepare_sending(files)
-
-
-
 
 
 def main():
