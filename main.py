@@ -4,7 +4,12 @@ import sys, os, socket
 from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QSpacerItem, QSizePolicy, QFileDialog, QDialog, QTableWidgetItem, QMessageBox
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtCore import pyqtSignal, pyqtSlot, QThread
-from PyQt5.uic import loadUi
+
+# only import loadUi when using ui file to create UI
+# from PyQt5.uic import loadUi
+
+from mainwindow import Ui_MainWindow
+from dialog import Ui_dialog
 
 def get_files_in_folder(folder):
     for root, dirs, files in os.walk(folder):
@@ -160,7 +165,12 @@ class SendDialog(QDialog):
 
         # UI setup - 1 option
         # dynamic load ui for development purpose
-        self.ui = loadUi('./dialog.ui', self)
+        # self.ui = loadUi('./dialog.ui', self)
+
+        # Use py to setup UI - 2 option
+        self.ui = Ui_dialog()
+        self.ui.setupUi(self)
+
         self.ui.pushButtonClose.setStyleSheet("background-color:#ffffff;");
         self.ui.pushButtonClose.setText("取消");
         self.ui.pushButtonClose.clicked.connect(self.close)
@@ -268,8 +278,13 @@ class MainWindow(QMainWindow):
 
         # UI setup - 1 option
         # dynamic load ui for development purpose
-        self.ui = loadUi('./mainwindow.ui', self)
-        self.ui.setStatusBar(None)  # https://doc.qt.io/qt-5/qmainwindow.html#setStatusBar
+        # self.ui = loadUi('./mainwindow.ui', self)
+
+        # Use py to setup UI - 2 option
+        self.ui = Ui_MainWindow()
+        self.ui.setupUi(self)
+
+        self.setStatusBar(None)  # https://doc.qt.io/qt-5/qmainwindow.html#setStatusBar
 
         self.ui.pushButtonChoose.setStyleSheet("background-color:#ffffff;")
         self.ui.pushButtonChoose.clicked.connect(self.pushButtonChoose_clicked)
