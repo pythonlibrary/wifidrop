@@ -191,8 +191,11 @@ class SendDialog(QDialog):
         self.socket_server_thread = socket_server_thread
 
     def closeEvent(self, event):
-        self.socket_client_thread.running = False
         self.socket_server_thread.running = True
+        try:
+            self.socket_client_thread.running = False
+        except:
+            pass
     
     @pyqtSlot(bool)
     def send_permission(self, allow):
